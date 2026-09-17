@@ -1,0 +1,14 @@
+{
+  "functions": {
+    "api/collect.py": { "maxDuration": 300 },
+    "api/download.py": { "maxDuration": 120 },
+    "api/status.py": { "maxDuration": 30 },
+    "api/login.py": { "maxDuration": 10 }
+  },
+  "crons": [
+    {
+      "path": "/api/collect",
+      "schedule": "0 22 * * *"
+    }
+  ]
+}
