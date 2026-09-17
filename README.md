@@ -7,13 +7,27 @@
 - 비어 있는 날짜는 버튼으로 그 자리에서 재수집
 - 완료된 날짜는 브라우저에서 바로 zip 다운로드
 
-로컬 PC에서 스크립트를 돌릴 필요 없이, 이 페이지 안에서 다 끝난다.
-(기존 로컬 파이프라인에 raw zip이 필요하면, 페이지에서 다운로드 받은 파일을 `C:\py\e\raw\` 에 넣으면 된다.)
-
 ## 요금제
 
 SKT 업무용이므로 Vercel Pro(팀) 플랜 기준. Hobby는 정책상 개인/비상업 용도이고
 함수 실행시간도 60초로 짧아 zip 다운로드+업로드에 빠듯하다.
+
+## 구조 (2026-09 Vercel Python 런타임 기준)
+
+Vercel의 Python 런타임은 `api/` 폴더에 파일을 여러 개 두고 각각 별도 함수로 자동 인식하던
+예전 방식을 더 이상 지원하지 않는다. 대신 `app.py`/`index.py`/`main.py` 같은 정해진 파일명
+하나에 Flask(또는 FastAPI) 앱을 두고 그 안에서 라우팅하는 걸 표준으로 요구하며, 배포되면
+**하나의 Vercel Function**이 된다. 그래서 이 프로젝트는 `api/index.py` 하나에 모든 라우트가
+들어있다.
+
+```
+public/index.html    로그인 + 수집 현황 대시보드 (정적 파일 — public/ 밑에 둬야 인식됨)
+api/index.py          Flask 앱 하나 — /api/login, /api/status, /api/download, /api/collect
+vercel.json            함수 maxDuration + cron 스케줄
+requirements.txt       flask, requests, vercel_blob
+.env.example           필요한 환경변수 목록
+pipeline/pull_from_blob.py  (선택) 로컬에서 한꺼번에 받고 싶을 때만
+```
 
 ## 1) 배포
 
@@ -42,6 +56,11 @@ vercel env add SESSION_SECRET production   # 세션 서명용 — CRON_SECRET과
 vercel --prod
 ```
 
+GitHub 연동으로 배포한 경우엔 위 `vercel env add` 대신 Vercel 대시보드의
+Project Settings > Environment Variables 에서 값 5개(CMS_USERNAME/CMS_PASSWORD/
+CRON_SECRET/ADMIN_PASSWORD/SESSION_SECRET)를 입력하면 된다. Blob 스토어를 연결한
+뒤에는 새 환경변수가 적용되도록 **한 번 Redeploy**가 필요하다.
+
 ## 2) 사용
 
 `https://<프로젝트>.vercel.app` 접속 → `ADMIN_PASSWORD`로 로그인 → 대시보드.
@@ -50,47 +69,27 @@ vercel --prod
 - **없음**: 회색, "수집" 버튼으로 그 날짜만 즉시 재수집
 - **지금 수집(D-1)**: 어제 날짜를 즉시 수집 (크론을 기다리지 않고 바로 테스트하고 싶을 때)
 
-수집은 CMS 로그인 + zip 다운로드 + Blob 업로드를 그 자리에서 하므로, 파일 크기에 따라
-몇십 초 걸릴 수 있다. 버튼을 누른 채로 기다리면 결과 메시지가 뜬다.
-
 ## 3) Cron
 
 `vercel.json`에 `0 22 * * *` (UTC) = KST 07:00 로 등록해 두었다.
 Vercel 대시보드 > 프로젝트 > Cron Jobs 탭에서 다음 실행 예정 시각과 최근 실행 로그를 볼 수 있다.
 
 **주의** — Vercel Cron은 실패해도 재시도나 알림이 없다. 당분간은 이 웹페이지를 가끔 열어
-빈 날짜(회색 "없음")가 쌓여 있지 않은지 확인하는 걸 권한다. 자동 알림이 필요하면
-`api/collect.py`의 `except Exception` 분기에 Slack webhook 호출을 붙이면 된다.
-
-## 파일 구성
-
-```
-index.html          로그인 + 수집 현황 대시보드 (정적 페이지)
-api/collect.py       GET(Cron 전용, Bearer 인증) / POST(웹페이지 수동 트리거, 세션 인증)
-api/status.py        최근 45일 수집 현황 JSON (세션 인증)
-api/download.py      ?date=YYYYMMDD 특정 날짜 zip 다운로드 (세션 인증)
-api/login.py         비밀번호 확인 -> 세션 쿠키 발급
-vercel.json          함수별 maxDuration + cron 스케줄
-requirements.txt     requests, vercel_blob
-.env.example         필요한 환경변수 목록
-pipeline/pull_from_blob.py  (선택) 로컬 PC에서 대량으로 한 번에 내려받고 싶을 때만 사용
-```
+빈 날짜(회색 "없음")가 쌓여 있지 않은지 확인하는 걸 권한다.
 
 ## 인증 구조
 
 - **Cron 호출**: `Authorization: Bearer <CRON_SECRET>` — Vercel이 자동으로 붙여준다.
 - **웹페이지**: `ADMIN_PASSWORD`로 로그인하면 HMAC 서명된 세션 쿠키(7일 유효)가 발급되고,
-  이후 `status`/`collect(POST)`/`download` 호출은 이 쿠키로 인증한다. 별도 DB 없이
-  `SESSION_SECRET`으로 서명·검증만 하는 방식이라, 내부 소수 인원용 도구 수준의 보안이다.
-  더 강한 보안이 필요하면 Vercel의 Deployment Protection(SSO)을 프로젝트 앞단에 추가로 걸 수 있다.
+  이후 모든 보호된 라우트는 이 쿠키로 인증한다. DB 없이 `SESSION_SECRET`으로 서명·검증만
+  하는 방식이라, 내부 소수 인원용 도구 수준의 보안이다. 더 강한 보안이 필요하면 Vercel의
+  Deployment Protection(SSO)을 프로젝트 앞단에 추가로 걸 수 있다.
 
 ## 알려진 제약
 
-- `vercel_blob`은 Vercel 공식 SDK가 아니라 커뮤니티 패키지다. 배포 중 Python 런타임
-  인식에 문제가 생기면 `vercel.json`의 함수 설정에 `"runtime": "python3.12"`를
-  추가하거나, Node.js(`@vercel/blob` 공식 SDK)로 옮기는 걸 고려한다.
-- `api/collect.py`의 `maxDuration`을 300초로 잡았다. 멀티사이트 확장으로 하루치 zip이
-  더 커지면(현재 이마트 단일 사이트 기준 약 60MB) 이 값을 늘리거나 Fluid Compute를 켜야 할 수 있다.
+- `vercel_blob`은 Vercel 공식 SDK가 아니라 커뮤니티 패키지다.
+- `maxDuration`을 300초로 잡았다. 멀티사이트 확장으로 하루치 zip이 더 커지면(현재 이마트
+  단일 사이트 기준 약 60MB) 이 값을 늘리거나 Fluid Compute를 켜야 할 수 있다.
 - CMS 로그인 계정/비밀번호가 Vercel 프로젝트 환경변수로 들어가므로, 지금 로컬 PC의
   Windows DPAPI 암호화보다는 접근 범위가 넓어진다(해당 프로젝트 권한이 있는 팀원 전체).
   가능하면 조회 전용 서브계정을 쓰는 걸 권한다.
